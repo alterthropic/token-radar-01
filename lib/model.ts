@@ -64,7 +64,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-2-comps';
+export const MODEL_VERSION = 'radar-3-comps';
 
 /** A category's fitted launch multiple: median mcap/tvl of the live tokens in it, and how many fitted it. */
 export interface CompMultiple {
@@ -171,14 +171,11 @@ function walkForward(live: SnapshotProtocol[]): Validation {
   };
 }
 
-/** The launch multiple one protocol inherits: the log-log size curve's prediction for its TVL, tilted by how its category's median comp sits relative to the global median. */
+/** The launch multiple one protocol inherits: its category's fitted median mcap/TVL comp, else the global median. */
 export function multipleFor(p: SnapshotProtocol, comps: Comps): number {
-  if (p.tvl_usd <= 0) return comps.global;
-  const regMult = regMcap(p.tvl_usd, comps.reg_a, comps.reg_b) / p.tvl_usd;
   const c = p.category ?? 'Uncategorized';
   const hit = comps.byCategory[c];
-  const tilt = hit !== undefined && comps.global > 0 ? Math.max(0.5, Math.min(2, hit.multiple / comps.global)) : 1;
-  return clampMultiple(regMult * tilt);
+  return hit !== undefined ? hit.multiple : comps.global;
 }
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */

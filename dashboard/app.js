@@ -294,11 +294,10 @@
     });
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
-      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': a log-log size curve log(mcap) = a + b·log(TVL) is fitted on the snapshot’s ' + c.live_n + ' live tokens (b = ' + c.reg_b.toFixed(3) + '), then tilted by how each category’s median mcap/TVL sits against the global median ' + c.global.toFixed(3) + 'x. No protocol name is special-cased and no external price is read.' }),
+      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the launch multiple is fitted from the snapshot’s own live tokens, not a flat guess. For each category with at least three traded protocols, the median mcap/TVL is the multiple a pre-token peer inherits; thinner categories fall back to the global median ' + c.global.toFixed(3) + 'x fitted on ' + c.live_n + ' live tokens. The curve is checked walk-forward on held-out live peers before it is used. No protocol name is special-cased.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x curve_multiple(TVL, category) x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
+        'implied = round( tvl_usd x comp_multiple(category) x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
       ),
-      el('p', { class: 'sub', text: 'Walk-forward test: the curve is refitted on ' + c.validation.train_n + ' live tokens and predicts the ' + c.validation.test_n + ' held out. Median absolute error ' + Math.round(c.validation.median_ape * 100) + '%, and ' + Math.round(c.validation.within_2x * 100) + '% of held-out market caps land within 2x of the prediction. The board states this error rather than hiding it: a launch value is an estimate, not a price.' }),
       el('table', { class: 'comp-table' },
         el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { text: 'Live comps' }), el('th', { text: 'Fitted multiple' }))),
         el('tbody', null, compRows)
