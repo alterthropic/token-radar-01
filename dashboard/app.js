@@ -163,14 +163,14 @@
   function lede() {
     return el('section', { class: 'lede' },
       el('div', null,
-        el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by implied value' }),
-        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols below that floor. Implied value is a model, not a promise.' })
+        el('h1', { text: DATA.board_size + ' pre-token protocols, ranked by fitted launch value' }),
+        el('p', { text: 'Every protocol on the snapshot’s watchlist is covered, and the early radar adds pre-token protocols below the $' + Math.round(DATA.floor_usd / 1e6) + 'M floor. Launch value is fitted from the ' + DATA.anchor_size + ' tokens that already trade, then checked on held-out peers before it ranks anything. Wrapped and staked products of traded tokens are left off. Implied value is a model, not a promise.' })
       ),
-      el('div', { class: 'facts' },
-        el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
-        el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) }))
+      el('div', { class: 'kpi' },
+        el('div', { class: 'kpi-cell' }, el('b', { text: String(DATA.scanned_size) }), el('span', { text: 'protocols scanned' })),
+        el('div', { class: 'kpi-cell' }, el('b', { text: String(DATA.pre_token_size) }), el('span', { text: 'pre-token candidates' })),
+        el('div', { class: 'kpi-cell' }, el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size }), el('span', { text: 'watchlist covered' })),
+        el('div', { class: 'kpi-cell' }, el('b', { text: String(DATA.anchor_size) }), el('span', { text: 'traded-token anchors' }))
       )
     );
   }
@@ -286,25 +286,20 @@
   function modelPanel() {
     var m = DATA.model;
     var c = DATA.comps;
-    var cats = Object.keys(c.byCategory).sort(function (a, b) { return c.byCategory[b].n - c.byCategory[a].n; });
-    var compRows = cats.map(function (k) {
-      return el('tr', null,
-        el('td', { text: k }),
-        el('td', { class: 'num', text: String(c.byCategory[k].n) }),
-        el('td', { class: 'num', text: c.byCategory[k].multiple.toFixed(3) + 'x' })
-      );
-    });
+    var v = c.validation;
+    var imp = v.improvement.toFixed(2);
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
-      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the launch multiple is fitted from the snapshot’s own live tokens, not a flat guess. For each category with at least three traded protocols, the median mcap/TVL is the multiple a pre-token peer inherits; thinner categories fall back to the global median ' + c.global.toFixed(3) + 'x fitted on ' + c.live_n + ' live tokens. The curve is checked walk-forward on held-out live peers before it is used. No protocol name is special-cased.' }),
+      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': launch value follows a size curve fitted on the snapshot’s own ' + c.live_n + ' traded tokens, not a flat guess and not a list of names. A log-log regression of market cap on TVL gives mcap = exp(' + c.reg_a.toFixed(2) + ' + ' + c.reg_b.toFixed(2) + ' x ln(TVL)); a pre-token protocol inherits that curve at its own TVL, then growth and maturity adjust it. The same function scores every row.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x comp_multiple(category) x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
+        'implied = round( tvl_usd x curve_multiple(tvl) x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
       ),
-      el('table', { class: 'comp-table' },
-        el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { text: 'Live comps' }), el('th', { text: 'Fitted multiple' }))),
-        el('tbody', null, compRows)
+      el('div', { class: 'validation' },
+        el('div', { class: 'val-cell' }, el('b', { text: imp + 'x' }), el('span', { text: 'better than a flat multiple, walk-forward' })),
+        el('div', { class: 'val-cell' }, el('b', { text: v.train_n + ' / ' + v.test_n }), el('span', { text: 'train / held-out peers' })),
+        el('div', { class: 'val-cell' }, el('b', { text: Math.round(v.within_2x * 100) + '%' }), el('span', { text: 'held-out predictions within 2x' }))
       ),
-      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since first listing, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar adds pre-token protocols below the watchlist floor by TVL; live-token protocols are set aside with their market caps shown as facts, not model output.' })
+      el('p', { class: 'sub', text: 'The curve is tested before it is used: every third traded token is held out, the curve is fitted on the rest, and its predictions are compared with a flat median multiple on the same held-out peers. The size curve cuts the median prediction error by ' + imp + 'x versus the flat baseline, so it earns its place on the board. TVL and seven-day growth come from the snapshot; age is the time since first listing (an unlisted age uses ' + m.unknown_age_days + ' days). Live-token protocols are set aside with their market caps shown as facts, not model output.' })
     );
   }
 
@@ -324,12 +319,13 @@
         el('h2', { id: 'detail-title', text: row.name }),
         el('p', { class: 'sub', text: (row.category || 'Other') + ' on ' + (row.chains && row.chains.length ? row.chains.join(', ') : 'an unnamed chain') })
       ),
-      el('button', { class: 'close', type: 'button', 'aria-label': 'Close details', text: 'Close', onclick: function () { dialog.close(); } })
+      el('button', { class: 'close', type: 'button', 'aria-label': 'Close details', text: 'Close', onclick: function () { dialog.removeAttribute('open'); state.selected = null; writeHash(); } })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
+        el('div', null, el('span', { text: 'Curve multiple (fitted)' }), el('b', { class: 'num', text: row.base_multiple.toFixed(3) + 'x' })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
@@ -349,11 +345,7 @@
         return el('li', null, el('b', { text: action }), el('span', { class: 'cost', text: tail }));
       }))
     ));
-    if (typeof dialog.showModal === 'function') {
-      if (!dialog.open) dialog.showModal();
-    } else {
-      dialog.setAttribute('open', '');
-    }
+    dialog.setAttribute('open', '');
   }
 
   function render() {

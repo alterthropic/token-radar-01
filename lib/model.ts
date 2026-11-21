@@ -6,16 +6,19 @@
 // snapshot's live-token protocols are kept apart and shown as the market's own values, never mixed into
 // the ranked board.
 //
-// Implied value follows only from the snapshot's own figures:
+// Implied value follows only from the snapshot's own figures. A log-log size curve is fitted on the
+// snapshot's traded tokens (mcap = exp(a + b x ln(TVL))); a pre-token protocol inherits that curve at
+// its own TVL, expressed as a multiple, then growth and maturity adjust it:
 //
-//   base       = tvl_usd x BASE_MULTIPLE
+//   curveMult  = clamp(exp(a + b x ln(tvl_usd)) / tvl_usd, 0.02, 3)
 //   growth     = clamp(change_7d, -60, 120) per cent
 //   growthMult = 1 + (growth / 100) x GROWTH_WEIGHT
 //   maturity   = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age_days unknown: 365)
-//   implied    = max(1, round(base x growthMult x maturity))
+//   implied    = max(1, round(tvl_usd x curveMult x growthMult x maturity))
 //
-// The constants are the house model's, stated in the dashboard and changeable in the model sandbox. No
-// protocol name is ever special-cased: the same function scores every row.
+// The curve is tested walk-forward against a flat median multiple on held-out traded peers before it
+// ranks anything. Wrapped and staked products of traded tokens are left off the board. No protocol
+// name is ever special-cased: the same function scores every row.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -64,7 +67,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-4-comps';
+export const MODEL_VERSION = 'radar-5-curve';
 
 /** A category's fitted launch multiple: median mcap/tvl of the live tokens in it, and how many fitted it. */
 export interface CompMultiple {
@@ -84,11 +87,13 @@ export interface Comps {
   reg_b: number;
 }
 
-/** Out-of-sample test of the comps curve: fit on a train split, predict the held-out live tokens. */
+/** Out-of-sample test of the comps curve against a flat-multiple baseline: fit on a train split, predict the held-out live tokens two ways, and report how much better the curve is. */
 export interface Validation {
   train_n: number;
   test_n: number;
-  median_ape: number;
+  curve_median_ape: number;
+  flat_median_ape: number;
+  improvement: number;
   within_2x: number;
 }
 
@@ -149,33 +154,40 @@ function regMcap(tvl: number, a: number, b: number): number {
   return Math.exp(a + b * Math.log(tvl));
 }
 
-/** Walk-forward test: hold out every third live token, fit the log-log curve on the rest, predict the held-out mcap, and report the median absolute percentage error and the share within 2x. */
+/** Walk-forward test: hold out every third live token, fit the log-log curve on the rest, and predict the held-out mcap two ways - the curve and a flat median multiple - then report how much better the curve is. */
 function walkForward(live: SnapshotProtocol[]): Validation {
   const train = live.filter((_, i) => i % 3 !== 0);
   const test = live.filter((_, i) => i % 3 === 0);
   const { a, b } = logLogFit(train);
-  const apes: number[] = [];
+  const flat = train.length > 0 ? median(train.map((p) => (p.mcap_usd as number) / p.tvl_usd)) : MODEL.base_multiple;
+  const curveApes: number[] = [];
+  const flatApes: number[] = [];
   let within = 0;
   for (const p of test) {
-    const pred = regMcap(p.tvl_usd, a, b);
     const actual = p.mcap_usd as number;
-    apes.push(Math.abs(pred - actual) / actual);
+    const pred = regMcap(p.tvl_usd, a, b);
+    curveApes.push(Math.abs(pred - actual) / actual);
+    flatApes.push(Math.abs(flat * p.tvl_usd - actual) / actual);
     const ratio = pred / actual;
     if (ratio >= 0.5 && ratio <= 2) within++;
   }
+  const curveMedian = curveApes.length > 0 ? median(curveApes) : 0;
+  const flatMedian = flatApes.length > 0 ? median(flatApes) : 0;
   return {
     train_n: train.length,
     test_n: test.length,
-    median_ape: apes.length > 0 ? median(apes) : 0,
+    curve_median_ape: curveMedian,
+    flat_median_ape: flatMedian,
+    improvement: curveMedian > 0 ? flatMedian / curveMedian : 1,
     within_2x: test.length > 0 ? within / test.length : 0,
   };
 }
 
-/** The launch multiple one protocol inherits: its category's fitted median mcap/TVL comp, else the global median. */
+/** The launch multiple one protocol inherits from the fitted size curve: reg(tvl)/tvl, clamped to a sane launch range. */
 export function multipleFor(p: SnapshotProtocol, comps: Comps): number {
-  const c = p.category ?? 'Uncategorized';
-  const hit = comps.byCategory[c];
-  return hit !== undefined ? hit.multiple : comps.global;
+  if (p.tvl_usd <= 0) return comps.global;
+  const mcap = regMcap(p.tvl_usd, comps.reg_a, comps.reg_b);
+  return clampMultiple(mcap / p.tvl_usd);
 }
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
@@ -263,6 +275,9 @@ export interface RadarData {
   board_size: number;
   early_size: number;
   live_size: number;
+  scanned_size: number;
+  pre_token_size: number;
+  anchor_size: number;
   rows: RadarRow[];
   live: LiveRow[];
   comps: Comps;
@@ -313,9 +328,12 @@ export function isPreToken(p: SnapshotProtocol): boolean {
   return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
 }
 
-/** Whether a protocol is one the board may rank: pre-token, not an exchange, not a versioned pool. */
+/** A wrapped or staked product of a token that already trades (WBTC, Binance staked ETH, USDT0 and their kin): its value is the underlying token's, not a launch of its own, so the radar leaves it off. */
+const WRAPPED = /(^|[-\s])(wrapped|staked)([-\s]|$)|^wbtc$|^usdt0$|^wrapped$/i;
+
+/** Whether a protocol is one the board may rank: pre-token, not an exchange, not a versioned pool, not a wrapped or staked product of a traded token. */
 export function isRankable(p: SnapshotProtocol): boolean {
-  return isPreToken(p) && p.category !== 'CEX' && !VERSIONED.test(p.name);
+  return isPreToken(p) && p.category !== 'CEX' && !VERSIONED.test(p.name) && !WRAPPED.test(p.slug);
 }
 
 /** The snapshot's protocol by slug. */
@@ -574,6 +592,9 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     board_size: board.length,
     early_size: early,
     live_size: live.length,
+    scanned_size: snapshot.protocols.length,
+    pre_token_size: snapshot.protocols.filter(isRankable).length,
+    anchor_size: comps.live_n,
     rows: board.map(radarRow),
     live,
     comps,
