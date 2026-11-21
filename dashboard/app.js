@@ -373,3 +373,4 @@
     if (e.key === 'Escape' && dialog.open) dialog.close();
   });
 })();
+

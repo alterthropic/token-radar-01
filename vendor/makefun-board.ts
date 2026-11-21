@@ -371,3 +371,4 @@ function fileHead(heading: string, code: ShownFile, room: number, tail: (hidden:
   const head = lines.slice(0, best).map((l) => `${l}\n`).join('');
   return `${heading}${open}${head}${close}${note(best)}${tail(code.bytes.length - rawEnd)}`;
 }
+
