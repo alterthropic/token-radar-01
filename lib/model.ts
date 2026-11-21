@@ -64,7 +64,63 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-1';
+export const MODEL_VERSION = 'radar-2-comps';
+
+/** A category's fitted launch multiple: median mcap/tvl of the live tokens in it, and how many fitted it. */
+export interface CompMultiple {
+  multiple: number;
+  n: number;
+}
+
+/** The comps the model fits from the snapshot's own live-token protocols: per category and a global fallback. */
+export interface Comps {
+  global: number;
+  byCategory: Record<string, CompMultiple>;
+  live_n: number;
+}
+
+/** The median of a non-empty list of numbers. */
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 === 1 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
+}
+
+/** Clamp a fitted multiple to a sane launch range so one outlier cannot dominate a category. */
+function clampMultiple(x: number): number {
+  return Math.min(3, Math.max(0.02, x));
+}
+
+/**
+ * Fit launch multiples from the snapshot's own figures: for every category with at least three
+ * live-token protocols, the median of mcap_usd / tvl_usd is the multiple a pre-token protocol in that
+ * category inherits; categories with fewer live comps fall back to the global median. No protocol name
+ * is special-cased and no external price is read: the whole curve is the snapshot's own market.
+ */
+export function fitComps(snapshot: Snapshot): Comps {
+  const live = snapshot.protocols.filter((p) => !isPreToken(p) && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  const ratios = live.map((p) => (p.mcap_usd as number) / p.tvl_usd);
+  const global = ratios.length > 0 ? clampMultiple(median(ratios)) : MODEL.base_multiple;
+  const groups = new Map<string, number[]>();
+  for (const p of live) {
+    const c = p.category ?? 'Uncategorized';
+    const list = groups.get(c) ?? [];
+    list.push((p.mcap_usd as number) / p.tvl_usd);
+    groups.set(c, list);
+  }
+  const byCategory: Record<string, CompMultiple> = {};
+  for (const [c, list] of groups) {
+    if (list.length >= 3) byCategory[c] = { multiple: clampMultiple(median(list)), n: list.length };
+  }
+  return { global, byCategory, live_n: live.length };
+}
+
+/** The launch multiple one protocol inherits: its category's fitted comp, else the global median. */
+export function multipleFor(p: SnapshotProtocol, comps: Comps): number {
+  const c = p.category ?? 'Uncategorized';
+  const hit = comps.byCategory[c];
+  return hit !== undefined ? hit.multiple : comps.global;
+}
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
 export const EARLY_ROWS = 160;
@@ -120,6 +176,7 @@ export interface RadarRow {
   implied_value_usd: number;
   growth_multiplier: number;
   maturity_multiplier: number;
+  base_multiple: number;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -146,6 +203,7 @@ export interface RadarData {
   live_size: number;
   rows: RadarRow[];
   live: LiveRow[];
+  comps: Comps;
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -172,17 +230,17 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** The three multipliers and the implied value one protocol gets under `model`. */
-export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants): { implied: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null } {
+/** The three multipliers and the implied value one protocol gets under `model` and its fitted comp multiple. */
+export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: ModelConstants, baseMultiple: number): { implied: number; growthPct: number; growthMult: number; maturityMult: number; age: number | null; baseMultiple: number } {
   const age = ageDays(asOf, protocol.listed_at);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-  const base = protocol.tvl_usd * model.base_multiple;
+  const base = protocol.tvl_usd * baseMultiple;
   const implied = Math.max(1, Math.round(base * growthMult * maturityMult));
-  return { implied, growthPct, growthMult, maturityMult, age };
+  return { implied, growthPct, growthMult, maturityMult, age, baseMultiple };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -212,7 +270,7 @@ export interface BoardSummary {
 }
 
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
-export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, comps: Comps = fitComps(snapshot)): BoardRow[] {
   const index = bySlug(snapshot.protocols);
   const chosen = new Map<string, SnapshotProtocol>();
   // The watchlist is the floor: every slug, even one the snapshot no longer carries (it cannot, but the
@@ -230,8 +288,9 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   for (const p of early) chosen.set(p.slug, p);
 
   const scored = [...chosen.values()].map((p) => {
-    const { implied, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model);
-    return { p, implied, growthPct, growthMult, maturityMult, age };
+    const baseMultiple = round4(multipleFor(p, comps));
+    const { implied, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model, baseMultiple);
+    return { p, implied, growthPct, growthMult, maturityMult, age, baseMultiple };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -250,7 +309,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     age_days: s.age,
     implied_value_usd: s.implied,
     model: {
-      base_multiple: model.base_multiple,
+      base_multiple: round4(s.baseMultiple),
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
@@ -384,12 +443,14 @@ export function radarRow(row: BoardRow): RadarRow {
     implied_value_usd: row.implied_value_usd,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
+    base_multiple: row.model.base_multiple,
   };
 }
 
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
-  const board = buildBoard(snapshot, model);
+  const comps = fitComps(snapshot);
+  const board = buildBoard(snapshot, model, comps);
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const radar: RadarData = {
@@ -404,6 +465,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     live_size: live.length,
     rows: board.map(radarRow),
     live,
+    comps,
   };
   return { board, radar };
 }

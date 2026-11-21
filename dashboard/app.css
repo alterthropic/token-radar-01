@@ -127,6 +127,10 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
 .steps li { padding-left: var(--step-1); }
 .steps b { display: block; font-weight: 500; }
 .cost { color: var(--muted); font-size: 12px; font-family: var(--font-num); }
+.comp-table { margin: var(--step-3) 0; font-size: 13px; }
+.comp-table td, .comp-table th { padding: var(--step-2) var(--step-3); }
+.comp-table tbody tr { cursor: default; }
+.comp-table tbody tr:hover { background: none; }
 
 @media (max-width: 900px) {
   .shell { padding: var(--step-4); }

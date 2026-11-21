@@ -33,7 +33,7 @@
     var growthMult = 1 + (growth / 100) * model.growth_weight;
     var age = row.age_days === null || row.age_days === undefined ? model.unknown_age_days : row.age_days;
     var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-    return Math.max(1, Math.round(row.tvl_usd * model.base_multiple * growthMult * maturity));
+    return Math.max(1, Math.round(row.tvl_usd * row.base_multiple * growthMult * maturity));
   }
 
   function el(tag, attrs) {
@@ -283,13 +283,26 @@
 
   function modelPanel() {
     var m = DATA.model;
+    var c = DATA.comps;
+    var cats = Object.keys(c.byCategory).sort(function (a, b) { return c.byCategory[b].n - c.byCategory[a].n; });
+    var compRows = cats.map(function (k) {
+      return el('tr', null,
+        el('td', { text: k }),
+        el('td', { class: 'num', text: String(c.byCategory[k].n) }),
+        el('td', { class: 'num', text: c.byCategory[k].multiple.toFixed(3) + 'x' })
+      );
+    });
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
-      el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
+      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the launch multiple is fitted from the snapshot’s own live tokens, not a flat guess. For each category with at least three traded protocols, the median mcap/TVL is the multiple a pre-token peer inherits; thinner categories fall back to the global median ' + c.global.toFixed(3) + 'x fitted on ' + c.live_n + ' live tokens. No protocol name is special-cased.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x ' + m.base_multiple + ' x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
+        'implied = round( tvl_usd x comp_multiple(category) x (1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight + ') x (' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + ') )'
       ),
-      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar is every pre-token protocol below the watchlist floor, by TVL, and the live-token protocols are set aside with their market caps shown.' })
+      el('table', { class: 'comp-table' },
+        el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { text: 'Live comps' }), el('th', { text: 'Fitted multiple' }))),
+        el('tbody', null, compRows)
+      ),
+      el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since first listing, the best record of how long it has run with no token; an unlisted age uses ' + m.unknown_age_days + ' days. The early radar adds pre-token protocols below the watchlist floor by TVL; live-token protocols are set aside with their market caps shown as facts, not model output.' })
     );
   }
 
