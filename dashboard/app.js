@@ -235,6 +235,7 @@
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
+        el('td', { class: 'num', text: Math.round(r.launch_odds * 100) + '%' }),
         el('td', null, el('span', { class: 'verdict verdict-' + r.verdict, text: r.verdict }), el('span', { class: 'sub net', text: (r.expected_net_usd >= 0 ? '+$' : '-$') + Math.abs(r.expected_net_usd) }))
       );
       tbody.appendChild(tr);
@@ -250,6 +251,7 @@
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
+            el('th', { scope: 'col', text: 'Launch odds' }),
             el('th', { scope: 'col', text: 'Farm verdict' })
           )),
           tbody
@@ -332,7 +334,9 @@
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
         el('div', null, el('span', { text: 'Maturity multiplier' }), el('b', { class: 'num', text: String(row.maturity_multiplier) })),
-        el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
+        el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
+        el('div', null, el('span', { text: 'Launch odds (estimate)' }), el('b', { class: 'num', text: Math.round(row.launch_odds * 100) + '%' })),
+        el('div', null, el('span', { text: 'Farm verdict' }), el('b', { class: 'num', text: row.verdict + ' (' + (row.expected_net_usd >= 0 ? '+$' : '-$') + Math.abs(row.expected_net_usd) + ' net)' }))
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(impliedOf(row, DATA.model)) + (impliedOf(row, DATA.model) === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price.' })
     ));

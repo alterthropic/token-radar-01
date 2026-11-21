@@ -64,7 +64,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3-comps';
+export const MODEL_VERSION = 'radar-4-comps';
 
 /** A category's fitted launch multiple: median mcap/tvl of the live tokens in it, and how many fitted it. */
 export interface CompMultiple {
@@ -217,6 +217,7 @@ export interface BoardRow {
   farm_steps: string[];
   verdict: 'farm' | 'thin' | 'skip';
   expected_net_usd: number;
+  launch_odds: number;
 }
 
 /** The dashboard's compact view of one row, with farm plans generated in the page. */
@@ -237,6 +238,7 @@ export interface RadarRow {
   base_multiple: number;
   verdict: 'farm' | 'thin' | 'skip';
   expected_net_usd: number;
+  launch_odds: number;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -355,6 +357,22 @@ export function farmVerdict(p: SnapshotProtocol, implied: number, age: number | 
   return { verdict, net };
 }
 
+/**
+ * A launch-odds proxy in [0.05, 0.95]: how likely a protocol is to issue a token, from its own record.
+ * Older protocols have had more time to prepare a launch; positive seven-day growth signals momentum;
+ * larger TVL means more to distribute. Each term is a saturating curve of a snapshot figure, averaged.
+ * It is a stated estimate, never a promise, and no protocol name is special-cased.
+ */
+export function launchOdds(p: SnapshotProtocol, age: number | null): number {
+  const a = age ?? 365;
+  const ageTerm = Math.min(1, a / 730);
+  const g = p.change_7d ?? 0;
+  const growthTerm = Math.min(1, Math.max(0, (g + 20) / 60));
+  const tvlTerm = Math.min(1, Math.log10(Math.max(1, p.tvl_usd) / 1e6) / 3);
+  const odds = 0.05 + 0.9 * (0.4 * ageTerm + 0.3 * growthTerm + 0.3 * tvlTerm);
+  return Math.round(Math.min(0.95, Math.max(0.05, odds)) * 100) / 100;
+}
+
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, comps: Comps = fitComps(snapshot)): BoardRow[] {
   const index = bySlug(snapshot.protocols);
@@ -377,7 +395,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, co
     const baseMultiple = round4(multipleFor(p, comps));
     const { implied, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model, baseMultiple);
     const econ = farmVerdict(p, implied, age);
-    return { p, implied, growthPct, growthMult, maturityMult, age, baseMultiple, verdict: econ.verdict, net: econ.net };
+    return { p, implied, growthPct, growthMult, maturityMult, age, baseMultiple, verdict: econ.verdict, net: econ.net, odds: launchOdds(p, age) };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -405,6 +423,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, co
     farm_steps: farmSteps(s.p, s.age).map(stepText),
     verdict: s.verdict,
     expected_net_usd: s.net,
+    launch_odds: s.odds,
   }));
 }
 
@@ -535,6 +554,7 @@ export function radarRow(row: BoardRow): RadarRow {
     base_multiple: row.model.base_multiple,
     verdict: row.verdict,
     expected_net_usd: row.expected_net_usd,
+    launch_odds: row.launch_odds,
   };
 }
 
