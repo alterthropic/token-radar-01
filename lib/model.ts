@@ -77,6 +77,19 @@ export interface Comps {
   global: number;
   byCategory: Record<string, CompMultiple>;
   live_n: number;
+  validation: Validation;
+  scale_slope: number;
+  ref_tvl: number;
+  reg_a: number;
+  reg_b: number;
+}
+
+/** Out-of-sample test of the comps curve: fit on a train split, predict the held-out live tokens. */
+export interface Validation {
+  train_n: number;
+  test_n: number;
+  median_ape: number;
+  within_2x: number;
 }
 
 /** The median of a non-empty list of numbers. */
@@ -112,14 +125,60 @@ export function fitComps(snapshot: Snapshot): Comps {
   for (const [c, list] of groups) {
     if (list.length >= 3) byCategory[c] = { multiple: clampMultiple(median(list)), n: list.length };
   }
-  return { global, byCategory, live_n: live.length };
+  const validation = walkForward(live);
+  const { a, b } = logLogFit(live);
+  return { global, byCategory, live_n: live.length, validation, scale_slope: b, ref_tvl: median(live.map((p) => p.tvl_usd)), reg_a: a, reg_b: b };
 }
 
-/** The launch multiple one protocol inherits: its category's fitted comp, else the global median. */
+/** OLS fit of log(mcap) = a + b*log(tvl) on the live tokens: the size curve the launch value follows. */
+function logLogFit(live: SnapshotProtocol[]): { a: number; b: number } {
+  const xs = live.map((p) => Math.log(p.tvl_usd));
+  const ys = live.map((p) => Math.log(p.mcap_usd as number));
+  const n = xs.length;
+  if (n < 2) return { a: Math.log(MODEL.base_multiple), b: 1 };
+  const mx = xs.reduce((s, x) => s + x, 0) / n;
+  const my = ys.reduce((s, y) => s + y, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) { num += (xs[i]! - mx) * (ys[i]! - my); den += (xs[i]! - mx) ** 2; }
+  const b = den > 0 ? num / den : 1;
+  return { a: my - b * mx, b: Math.max(0.2, Math.min(1.8, b)) };
+}
+
+/** The regression's predicted mcap for a TVL, clamped to a sane launch range relative to TVL. */
+function regMcap(tvl: number, a: number, b: number): number {
+  return Math.exp(a + b * Math.log(tvl));
+}
+
+/** Walk-forward test: hold out every third live token, fit the log-log curve on the rest, predict the held-out mcap, and report the median absolute percentage error and the share within 2x. */
+function walkForward(live: SnapshotProtocol[]): Validation {
+  const train = live.filter((_, i) => i % 3 !== 0);
+  const test = live.filter((_, i) => i % 3 === 0);
+  const { a, b } = logLogFit(train);
+  const apes: number[] = [];
+  let within = 0;
+  for (const p of test) {
+    const pred = regMcap(p.tvl_usd, a, b);
+    const actual = p.mcap_usd as number;
+    apes.push(Math.abs(pred - actual) / actual);
+    const ratio = pred / actual;
+    if (ratio >= 0.5 && ratio <= 2) within++;
+  }
+  return {
+    train_n: train.length,
+    test_n: test.length,
+    median_ape: apes.length > 0 ? median(apes) : 0,
+    within_2x: test.length > 0 ? within / test.length : 0,
+  };
+}
+
+/** The launch multiple one protocol inherits: the log-log size curve's prediction for its TVL, tilted by how its category's median comp sits relative to the global median. */
 export function multipleFor(p: SnapshotProtocol, comps: Comps): number {
+  if (p.tvl_usd <= 0) return comps.global;
+  const regMult = regMcap(p.tvl_usd, comps.reg_a, comps.reg_b) / p.tvl_usd;
   const c = p.category ?? 'Uncategorized';
   const hit = comps.byCategory[c];
-  return hit !== undefined ? hit.multiple : comps.global;
+  const tilt = hit !== undefined && comps.global > 0 ? Math.max(0.5, Math.min(2, hit.multiple / comps.global)) : 1;
+  return clampMultiple(regMult * tilt);
 }
 
 /** How many pre-token protocols below the watchlist floor the early radar carries, by TVL. */
@@ -159,6 +218,8 @@ export interface BoardRow {
     age_days: number | null;
   };
   farm_steps: string[];
+  verdict: 'farm' | 'thin' | 'skip';
+  expected_net_usd: number;
 }
 
 /** The dashboard's compact view of one row, with farm plans generated in the page. */
@@ -177,6 +238,8 @@ export interface RadarRow {
   growth_multiplier: number;
   maturity_multiplier: number;
   base_multiple: number;
+  verdict: 'farm' | 'thin' | 'skip';
+  expected_net_usd: number;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -269,6 +332,32 @@ export interface BoardSummary {
   live_size: number;
 }
 
+/** A farm's netted economics: expected airdrop capture minus capital and gas, and a farm/thin/skip verdict. */
+export interface FarmEcon {
+  verdict: 'farm' | 'thin' | 'skip';
+  net: number;
+}
+
+/**
+ * Net expected value of farming one protocol, from its own implied value and age. A launch is assumed
+ * to distribute 5% of its implied value to early users; a single modest position captures about 0.02%
+ * of that pool (the share one wallet of many earns). Capital is the position size from capitalFor and
+ * gas is a flat setup plus weekly cost over the hold window. The verdict is farm when net exceeds $50,
+ * thin when it is positive but small, skip when the expected capture does not cover the cost. No name
+ * is special-cased; every figure follows from the snapshot-derived implied value and the protocol's age.
+ */
+export function farmVerdict(p: SnapshotProtocol, implied: number, age: number | null): FarmEcon {
+  const capital = capitalFor(p);
+  const hold = holdDaysFor(age);
+  const weeks = Math.max(1, Math.ceil(hold / 7));
+  const airdropPool = implied * 0.05;
+  const capture = airdropPool * 0.0002;
+  const gas = 8 + weeks * 2;
+  const net = Math.round(capture - gas);
+  const verdict: FarmEcon['verdict'] = net > 50 ? 'farm' : net > 0 ? 'thin' : 'skip';
+  return { verdict, net };
+}
+
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, comps: Comps = fitComps(snapshot)): BoardRow[] {
   const index = bySlug(snapshot.protocols);
@@ -290,7 +379,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, co
   const scored = [...chosen.values()].map((p) => {
     const baseMultiple = round4(multipleFor(p, comps));
     const { implied, growthPct, growthMult, maturityMult, age } = impliedValue(p, snapshot.as_of, model, baseMultiple);
-    return { p, implied, growthPct, growthMult, maturityMult, age, baseMultiple };
+    const econ = farmVerdict(p, implied, age);
+    return { p, implied, growthPct, growthMult, maturityMult, age, baseMultiple, verdict: econ.verdict, net: econ.net };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
   return scored.map((s, i) => ({
@@ -316,6 +406,8 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL, co
       age_days: s.age,
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
+    verdict: s.verdict,
+    expected_net_usd: s.net,
   }));
 }
 
@@ -444,6 +536,8 @@ export function radarRow(row: BoardRow): RadarRow {
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     base_multiple: row.model.base_multiple,
+    verdict: row.verdict,
+    expected_net_usd: row.expected_net_usd,
   };
 }
 
