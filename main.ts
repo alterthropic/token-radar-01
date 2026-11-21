@@ -6,8 +6,8 @@
 // the summary the judge reads, with the vendored make.fun library.
 //
 // The dashboard is a static page, no framework and no network: dashboard/index.html, dashboard/app.css
-// and dashboard/app.js read /output/data.js, which this program writes from the same board. A starting
-// point, not a winner: it covers the watchlist, states the model and gives every protocol a farm plan.
+// and dashboard/app.js read /output/data.js, which this program writes from the same board. The size
+// curve ranks every pre-token protocol; growth and maturity adjust each value before it is written.
 // Change the model, the page or the plan; keep the gate's shape.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
